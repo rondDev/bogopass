@@ -58,7 +58,7 @@ fn main() {
     let output_password = Arc::new(Mutex::new(String::from("")));
     let outp = output_password.clone();
 
-    for i in 0..thread_count {
+    for _ in 0..thread_count {
         let n = Arc::clone(&num);
         let pass = Arc::clone(&output_password);
         threads.push(thread::spawn(move || loop {
@@ -76,7 +76,7 @@ fn main() {
                 solved = true;
                 *pass.lock().unwrap() = p.to_string();
             }
-            println!("{} on try {}", p, n.load(Ordering::SeqCst));
+            // println!("{} on try {}", p, n.load(Ordering::SeqCst));
         }));
     }
 
