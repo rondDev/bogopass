@@ -1,4 +1,5 @@
 use std::{
+    env,
     sync::{
         atomic::{AtomicI32, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -9,6 +10,29 @@ use std::{
 
 use rand::Rng;
 fn main() {
+    let start_time = time::Instant::now();
+    let args: Vec<String> = env::args().collect();
+    let letter_count;
+    let symbol_count;
+    let number_count;
+
+    if args.len() > 3 && !args[1].is_empty() && !args[2].is_empty() && !args[3].is_empty() {
+        letter_count = args[1].trim().parse::<usize>().unwrap();
+        symbol_count = args[2].trim().parse::<usize>().unwrap();
+        number_count = args[3].trim().parse::<usize>().unwrap();
+    } else {
+        println!("Welcome to bogopass!");
+
+        println!("How many letters would you like in your password?");
+        letter_count = read_num();
+
+        println!("How many symbols would you like in your password?");
+        symbol_count = read_num();
+
+        println!("How many numbers would you like in your password?");
+        number_count = read_num();
+    }
+
     let ascii_letters = String::from_utf8((b'a'..=b'z').chain(b'A'..=b'Z').collect()).unwrap();
     let punctuation = String::from_utf8(
         (b'!'..=b'/')
@@ -18,17 +42,6 @@ fn main() {
     )
     .unwrap();
     let digits = String::from_utf8((b'0'..=b'9').collect()).unwrap();
-
-    println!("Welcome to bogopass!");
-
-    println!("How many letters would you like in your password?");
-    let letter_count = read_num();
-
-    println!("How many symbols would you like in your password?");
-    let symbol_count = read_num();
-
-    println!("How many numbers would you like in your password?");
-    let number_count = read_num();
 
     let mut char_set: String = String::new();
 
@@ -45,6 +58,7 @@ fn main() {
     }
 
     let chars = Box::leak(char_set.into_boxed_str());
+    let chars_len = chars.len() as usize;
 
     let num = Arc::new(AtomicI32::new(0));
     let dur_generate = Arc::new(AtomicUsize::new(0));
@@ -54,6 +68,8 @@ fn main() {
 
     let output_password = Arc::new(Mutex::new(String::from("")));
     let outp = output_password.clone();
+
+    let mut temp: Vec<u8> = vec![0; letter_count + symbol_count + number_count];
 
     let n = Arc::clone(&num);
     let pass = Arc::clone(&output_password);
@@ -67,16 +83,10 @@ fn main() {
             break;
         }
         let mut rng = rand::thread_rng();
-        let mut o = String::from("");
         let before_generate = time::Instant::now();
         {
-            for _ in 0..(letter_count + symbol_count + number_count) {
-                o.push(
-                    chars
-                        .chars()
-                        .nth(rng.gen_range(0..chars.len()) as usize)
-                        .unwrap(),
-                );
+            for i in 0..(letter_count + symbol_count + number_count) {
+                temp[i] = chars.chars().nth(rng.gen_range(0..chars_len)).unwrap() as u8;
             }
         }
         let duration_generate = before_generate.elapsed();
@@ -84,9 +94,9 @@ fn main() {
         n.fetch_add(1, Ordering::SeqCst);
 
         let before_check = time::Instant::now();
-        if check_pass(&o, letter_count, symbol_count, number_count) {
+        if check_pass(&temp, letter_count, symbol_count, number_count) {
             solved = true;
-            *pass.lock().unwrap() = o.to_string();
+            *pass.lock().unwrap() = String::from_utf8(temp.clone()).unwrap();
         }
 
         let duration_check = before_check.elapsed();
@@ -102,14 +112,14 @@ fn main() {
         (Duration::from_nanos(dur_generate.load(Ordering::SeqCst) as u64) / tries as u32),
         (Duration::from_nanos(dur_check.load(Ordering::SeqCst) as u64) / tries as u32),
     );
+    println!("\tTotal time: \t\t\t{:?}", start_time.elapsed());
 }
 
-fn check_pass(pass: &str, letters: usize, symbols: usize, numbers: usize) -> bool {
+fn check_pass(pass: &[u8], letters: usize, symbols: usize, numbers: usize) -> bool {
     let mut letter_count = 0;
     let mut symbol_count = 0;
     let mut number_count = 0;
-    for k in pass.chars() {
-        let c = k as u8;
+    for c in pass {
         if c.is_ascii_alphabetic() {
             letter_count += 1;
             continue;
