@@ -1,25 +1,30 @@
 use std::{
     env,
-    sync::{
-        atomic::{AtomicI32, AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
     time::{self, Duration},
 };
 
-use rand::Rng;
+use num_format::{Locale, ToFormattedString};
+use rand::{thread_rng, Rng};
 fn main() {
     let start_time = time::Instant::now();
     let args: Vec<String> = env::args().collect();
     let letter_count;
     let symbol_count;
     let number_count;
+    let thread_count;
 
-    if args.len() > 3 && !args[1].is_empty() && !args[2].is_empty() && !args[3].is_empty() {
+    if args.len() > 3
+        && !args[1].is_empty()
+        && !args[2].is_empty()
+        && !args[3].is_empty()
+        && !args[4].is_empty()
+    {
         letter_count = args[1].trim().parse::<usize>().unwrap();
         symbol_count = args[2].trim().parse::<usize>().unwrap();
         number_count = args[3].trim().parse::<usize>().unwrap();
+        thread_count = args[4].trim().parse::<usize>().unwrap();
     } else {
         println!("Welcome to bogopass!");
 
@@ -31,6 +36,9 @@ fn main() {
 
         println!("How many numbers would you like in your password?");
         number_count = read_num();
+
+        println!("Amount of threads?");
+        thread_count = read_num();
     }
 
     let ascii_letters = String::from_utf8((b'a'..=b'z').chain(b'A'..=b'Z').collect()).unwrap();
@@ -57,62 +65,46 @@ fn main() {
         char_set += digits.as_str();
     }
 
-    let chars = Box::leak(char_set.into_boxed_str());
-    let chars_len = chars.len() as usize;
+    let solved = Arc::new(Mutex::new(false));
+    let total = Arc::new(Mutex::new(0));
+    let pass = Arc::new(Mutex::new(String::new()));
 
-    let num = Arc::new(AtomicI32::new(0));
-    let dur_generate = Arc::new(AtomicUsize::new(0));
-    let dur_check = Arc::new(AtomicUsize::new(0));
-
-    let mut solved = false;
-
-    let output_password = Arc::new(Mutex::new(String::from("")));
-    let outp = output_password.clone();
-
-    let mut temp: Vec<u8> = vec![0; letter_count + symbol_count + number_count];
-
-    let n = Arc::clone(&num);
-    let pass = Arc::clone(&output_password);
-    let d_generate = Arc::clone(&dur_generate);
-    let d_check = Arc::clone(&dur_check);
-
-    // PERF: Threading allows for an increase in performance even if it's only a single thread
-    // NOTE: Multiple threads seemed to worsen the performance in most of my benchmarks
-    let thread = thread::spawn(move || loop {
-        if solved {
-            break;
+    thread::scope(|s| {
+        let mut threads = vec![];
+        for _ in 0..thread_count {
+            threads.push(s.spawn(|| loop {
+                if *solved.lock().unwrap() {
+                    break;
+                }
+                *total.lock().unwrap() += 1;
+                let p = new_impl(&letter_count, &symbol_count, &number_count, &char_set);
+                let c = check_pass(
+                    p.as_str().as_bytes(),
+                    letter_count,
+                    symbol_count,
+                    number_count,
+                );
+                if c {
+                    *solved.lock().unwrap() = true;
+                    *pass.lock().unwrap() = p.clone();
+                    break;
+                }
+            }))
         }
-        let mut rng = rand::thread_rng();
-        let before_generate = time::Instant::now();
-        {
-            for i in 0..(letter_count + symbol_count + number_count) {
-                temp[i] = chars.chars().nth(rng.gen_range(0..chars_len)).unwrap() as u8;
-            }
-        }
-        let duration_generate = before_generate.elapsed();
-        d_generate.fetch_add(duration_generate.as_nanos() as usize, Ordering::SeqCst);
-        n.fetch_add(1, Ordering::SeqCst);
-
-        let before_check = time::Instant::now();
-        if check_pass(&temp, letter_count, symbol_count, number_count) {
-            solved = true;
-            *pass.lock().unwrap() = String::from_utf8(temp.clone()).unwrap();
-        }
-
-        let duration_check = before_check.elapsed();
-        d_check.fetch_add(duration_check.as_nanos() as usize, Ordering::SeqCst);
     });
 
-    let _ = thread.join();
-    let tries = num.load(Ordering::SeqCst);
+    let total = *total.lock().unwrap();
     println!(
-        "Your password is: {}\n\tIt took \t\t\t{:?} tries\n\tAverage time to generate: \t{:?}\n\tAverage time to check: \t\t{:?}",
-        outp.lock().unwrap(),
-        tries,
-        (Duration::from_nanos(dur_generate.load(Ordering::SeqCst) as u64) / tries as u32),
-        (Duration::from_nanos(dur_check.load(Ordering::SeqCst) as u64) / tries as u32),
+        "Letters: {}\nSymbols: {}\nNumbers: {}\nThreads: {}",
+        letter_count, symbol_count, number_count, thread_count
     );
-    println!("\tTotal time: \t\t\t{:?}", start_time.elapsed());
+    println!(
+        "Your password is: {}\n\tIterations:\t\t\t{}\n\tAverage time per iteration:\t{:?}\n\tTotal time: \t\t\t{:?}",
+        *pass.lock().unwrap(),
+        total.to_formatted_string(&Locale::en),
+        Duration::from_nanos(start_time.elapsed().as_nanos() as u64 / total),
+        start_time.elapsed()
+    );
 }
 
 fn check_pass(pass: &[u8], letters: usize, symbols: usize, numbers: usize) -> bool {
@@ -146,4 +138,27 @@ fn read_string() -> String {
 
 fn read_num() -> usize {
     read_string().trim().parse::<usize>().unwrap()
+}
+
+fn gen_string(len: usize, charset: String) -> String {
+    let mut rng = thread_rng();
+    let s: String = (0..len)
+        .map(|_| {
+            (charset
+                .chars()
+                .nth(rng.gen_range(0..charset.len()))
+                .unwrap()) as char
+        })
+        .collect();
+    s
+}
+
+fn new_impl(
+    letter_len: &usize,
+    symbol_len: &usize,
+    number_len: &usize,
+    charset: &String,
+) -> String {
+    let s = gen_string(letter_len + symbol_len + number_len, charset.to_string());
+    s
 }
