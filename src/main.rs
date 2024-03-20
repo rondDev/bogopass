@@ -1,9 +1,10 @@
 use std::{
     sync::{
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicI32, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
+    time::{self, Duration},
 };
 
 use rand::Rng;
@@ -21,13 +22,13 @@ fn main() {
     println!("Welcome to bogopass!");
 
     println!("How many letters would you like in your password?");
-    let letter_count = read_string().trim().parse::<usize>().unwrap();
+    let letter_count = read_num();
 
     println!("How many symbols would you like in your password?");
-    let symbol_count = read_string().trim().parse::<usize>().unwrap();
+    let symbol_count = read_num();
 
     println!("How many numbers would you like in your password?");
-    let number_count = read_string().trim().parse::<usize>().unwrap();
+    let number_count = read_num();
 
     let mut char_set: String = String::new();
 
@@ -43,9 +44,11 @@ fn main() {
         char_set += digits.as_str();
     }
 
-    let chars = string_to_static_str(char_set);
+    let chars = Box::leak(char_set.into_boxed_str());
 
     let num = Arc::new(AtomicI32::new(0));
+    let dur_generate = Arc::new(AtomicUsize::new(0));
+    let dur_check = Arc::new(AtomicUsize::new(0));
 
     let mut solved = false;
 
@@ -54,32 +57,50 @@ fn main() {
 
     let n = Arc::clone(&num);
     let pass = Arc::clone(&output_password);
+    let d_generate = Arc::clone(&dur_generate);
+    let d_check = Arc::clone(&dur_check);
+
+    // PERF: Threading allows for an increase in performance even if it's only a single thread
+    // NOTE: Multiple threads seemed to worsen the performance in most of my benchmarks
     let thread = thread::spawn(move || loop {
         if solved {
             break;
         }
         let mut rng = rand::thread_rng();
         let mut o = String::from("");
-        for _ in 0..(letter_count + symbol_count + number_count) {
-            o.push(
-                chars
-                    .chars()
-                    .nth(rng.gen_range(0..chars.len()) as usize)
-                    .unwrap(),
-            );
+        let before_generate = time::Instant::now();
+        {
+            for _ in 0..(letter_count + symbol_count + number_count) {
+                o.push(
+                    chars
+                        .chars()
+                        .nth(rng.gen_range(0..chars.len()) as usize)
+                        .unwrap(),
+                );
+            }
         }
+        let duration_generate = before_generate.elapsed();
+        d_generate.fetch_add(duration_generate.as_nanos() as usize, Ordering::SeqCst);
         n.fetch_add(1, Ordering::SeqCst);
+
+        let before_check = time::Instant::now();
         if check_pass(&o, letter_count, symbol_count, number_count) {
             solved = true;
             *pass.lock().unwrap() = o.to_string();
         }
+
+        let duration_check = before_check.elapsed();
+        d_check.fetch_add(duration_check.as_nanos() as usize, Ordering::SeqCst);
     });
 
     let _ = thread.join();
+    let tries = num.load(Ordering::SeqCst);
     println!(
-        "Your password is: {} and it took {:?} tries.",
+        "Your password is: {}\n\tIt took \t\t\t{:?} tries\n\tAverage time to generate: \t{:?}\n\tAverage time to check: \t\t{:?}",
         outp.lock().unwrap(),
-        num.load(Ordering::SeqCst)
+        tries,
+        (Duration::from_nanos(dur_generate.load(Ordering::SeqCst) as u64) / tries as u32),
+        (Duration::from_nanos(dur_check.load(Ordering::SeqCst) as u64) / tries as u32),
     );
 }
 
@@ -113,6 +134,6 @@ fn read_string() -> String {
     input
 }
 
-fn string_to_static_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
+fn read_num() -> usize {
+    read_string().trim().parse::<usize>().unwrap()
 }
